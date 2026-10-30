@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from google import genai
@@ -16,6 +17,7 @@ MAX_GAP_QUERIES = 5
 MAX_BROADEN_QUERIES = 4
 MIN_MENTIONS_FOR_COVERAGE = 2
 MAX_API_RETRIES = 3
+MIN_INDEPENDENT_DOMAINS_FOR_HIGH_CONFIDENCE = 2
 
 _client = None
 
@@ -163,9 +165,12 @@ benchmarks instead" or "Not covered by the search results; this is a general ind
 from established marketing-benchmark knowledge, not directly sourced"). Leave "sources" \
 empty only when you used general knowledge with no supporting search result.
 
-Rate your confidence per metric as "High" (multiple matching, industry-specific sources), \
-"Medium" (some relevant sources but not an exact match), or "Low" (general/adjacent \
-knowledge, not directly sourced).
+Rate your confidence per metric as "High" (multiple matching, industry-specific sources, \
+from different publishers), "Medium" (some relevant sources but not an exact match, or only \
+one source), or "Low" (general/adjacent knowledge, not directly sourced). Note: "High" will \
+be automatically downgraded afterward if fewer than two distinct-domain sources are listed \
+for that metric, so only claim "High" when you're citing genuinely independent sources, not \
+the same site twice.
 
 Beyond the marketer's reported metrics, also include a few other standard metrics for this \
 channel and campaign type that give useful additional context, following the same sourcing \
@@ -201,7 +206,7 @@ Respond with this JSON schema only:
       "reasonable_range": "string (e.g. '1.5% - 3%')",
       "confidence": "string (High / Medium / Low)",
       "reasoning": "string (why this range, referencing the context/sources, and noting if it's a general/broadened estimate rather than industry-specific)",
-      "sources": ["string (title + url)", "..."]
+      "sources": [{{"title": "string (source/publisher title)", "url": "string (the exact URL from the search results above)"}}]
     }}
   ],
   "context_notes": "string (caveats: data quality, how well the sources match this exact context, what to treat with caution)"
@@ -479,6 +484,32 @@ def deep_research_benchmarks(
     return deduped, trace, gap_analysis.get("gaps", "")
 
 
+def _source_domain(url):
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except ValueError:
+        return ""
+    return netloc[4:] if netloc.startswith("www.") else netloc
+
+
+def _enforce_confidence_rule(metrics):
+    """A model can call its own single-source finding "High confidence" -- don't take that
+    claim at face value. Downgrade to Medium in code (not just in the prompt) whenever fewer
+    than MIN_INDEPENDENT_DOMAINS_FOR_HIGH_CONFIDENCE distinct-domain sources back the metric,
+    so the badge the marketer sees always reflects real source diversity."""
+    for m in metrics:
+        domains = {_source_domain(s.get("url", "")) for s in m.get("sources", []) if s.get("url")}
+        domains.discard("")
+        if m.get("confidence") == "High" and len(domains) < MIN_INDEPENDENT_DOMAINS_FOR_HIGH_CONFIDENCE:
+            m["confidence"] = "Medium"
+            m["reasoning"] = (
+                m.get("reasoning", "").rstrip()
+                + " (Confidence adjusted to Medium: fewer than two independent-domain sources "
+                "were confirmed for this range.)"
+            )
+    return metrics
+
+
 def synthesize_benchmark(
     industry, stage, business_model, channel, campaign_type, audience_type, funnel_stage, actual_metrics_text, search_results
 ):
@@ -501,7 +532,9 @@ def synthesize_benchmark(
         ),
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
-    return json.loads(response.text)
+    benchmark = json.loads(response.text)
+    benchmark["metrics"] = _enforce_confidence_rule(benchmark.get("metrics", []))
+    return benchmark
 
 
 def evaluate_quantitative(benchmark, actual_metrics_text, volume_context=None, previous_run=None):

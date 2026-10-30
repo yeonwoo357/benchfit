@@ -2,6 +2,7 @@ import html
 import os
 import sys
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -216,8 +217,19 @@ if active_step == 1:
                     st.text_input("Reasonable range", value=m["reasonable_range"], key=f"range_{i}")
                 with c2:
                     st.text_area("Reasoning", value=m["reasoning"], key=f"reasoning_{i}", height=70)
-                if m.get("sources"):
-                    st.caption("Sources: " + esc(" · ".join(m["sources"])))
+                sources = m.get("sources")
+                if sources:
+                    domain_count = len(
+                        {urlparse(s["url"]).netloc for s in sources if isinstance(s, dict) and s.get("url")}
+                    )
+                    agreement_note = (
+                        f" ({domain_count} independent sources)" if domain_count >= 2 else ""
+                    )
+                    labels = [
+                        (f'{s.get("title", s.get("url", ""))} {s["url"]}' if isinstance(s, dict) else str(s))
+                        for s in sources
+                    ]
+                    st.caption("Sources" + agreement_note + ": " + esc(" · ".join(labels)))
 
         if st.button("✅ Confirm this benchmark & continue", type="primary"):
             confirmed_metrics = []
