@@ -10,7 +10,8 @@ from search import search_web
 load_dotenv()
 
 MODEL_NAME = "gemini-3.5-flash-lite"
-MAX_SEARCH_STEPS = 4
+MAX_SEARCH_STEPS = 5
+MAX_GAP_QUERIES = 3
 
 _client = None
 
@@ -65,8 +66,12 @@ SYNTHESIZE_PROMPT = """\
 Using ONLY the search results gathered below, synthesize a reasonable performance \
 benchmark standard for this campaign context. For each metric that is actually relevant \
 to this channel and campaign type, infer a reasonable range grounded in the search \
-results -- do not invent numbers that aren't supported by the sources. If the sources \
-don't give enough signal for a metric, say so instead of guessing.
+results -- do not invent numbers that aren't supported by the sources. Where multiple \
+sources give different numbers for the same metric, reconcile them into one range and say \
+so in the reasoning (e.g. "sources range from X to Y; using the overlap"). Prefer metrics \
+backed by more than one source, and if a metric relies on only one weak or tangential \
+source, say so explicitly in its reasoning rather than presenting it with false confidence. \
+If the sources don't give enough signal for a metric at all, say so instead of guessing.
 Respond entirely in English, even if the source material is in Korean or another language.
 
 Campaign context:
@@ -90,6 +95,33 @@ Respond with this JSON schema only:
     }}
   ],
   "context_notes": "string (caveats: data quality, how well the sources match this exact context, what to treat with caution)"
+}}
+"""
+
+GAP_ANALYSIS_PROMPT = """\
+You already gathered the search results below for this campaign context. Review them \
+critically, as a research analyst would before finalizing a report. For which relevant \
+metrics is the evidence thin -- a single source, vague numbers, no mention of this \
+industry/company-stage/channel combination, or outdated data? Propose up to {max_queries} \
+additional, more specific search queries that would plug those exact gaps (e.g. naming the \
+missing metric, a narrower sub-vertical, or a different angle like "annual report" / \
+"case study" / "benchmark 2026"). If coverage is already solid, propose fewer queries or \
+none.
+
+Campaign context:
+- Industry: {industry}
+- Company stage: {stage}
+- Business model: {business_model}
+- Channel: {channel}
+- Campaign type: {campaign_type}
+
+[Search results gathered so far]
+{search_results}
+
+Respond with this JSON schema only:
+{{
+  "gaps": "string (what's thin or missing, 1-3 sentences)",
+  "followup_queries": ["string", "..."]
 }}
 """
 
@@ -221,10 +253,56 @@ def research_benchmarks(industry, stage, business_model, channel, campaign_type,
     return deduped, trace
 
 
+def _find_gaps(industry, stage, business_model, channel, campaign_type, search_results):
+    client = _get_client()
+    results_text = "\n\n".join(
+        f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:400]}" for r in search_results
+    )
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=GAP_ANALYSIS_PROMPT.format(
+            max_queries=MAX_GAP_QUERIES,
+            industry=industry,
+            stage=stage,
+            business_model=business_model,
+            channel=channel,
+            campaign_type=campaign_type,
+            search_results=results_text,
+        ),
+        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    )
+    return json.loads(response.text)
+
+
+def deep_research_benchmarks(industry, stage, business_model, channel, campaign_type, on_step=None):
+    """Two-phase research: an agent-driven broad pass, then a targeted gap-filling pass
+    that re-reads the results like an analyst and searches again for whatever is thin."""
+    deduped, trace = research_benchmarks(industry, stage, business_model, channel, campaign_type, on_step=on_step)
+
+    if on_step:
+        on_step("Reviewing coverage for gaps...")
+    gap_analysis = _find_gaps(industry, stage, business_model, channel, campaign_type, deduped)
+    followup_queries = gap_analysis.get("followup_queries", [])[:MAX_GAP_QUERIES]
+
+    seen = {r["url"] for r in deduped}
+    for query in followup_queries:
+        if on_step:
+            on_step(f"Deepening: {query}")
+        results = search_web(query)
+        trace.append({"query": query, "result_count": len(results), "phase": "gap-fill"})
+        for r in results:
+            if r["url"] in seen:
+                continue
+            seen.add(r["url"])
+            deduped.append(r)
+
+    return deduped, trace, gap_analysis.get("gaps", "")
+
+
 def synthesize_benchmark(industry, stage, business_model, channel, campaign_type, search_results):
     client = _get_client()
     results_text = "\n\n".join(
-        f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:500]}" for r in search_results
+        f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:900]}" for r in search_results
     )
     response = client.models.generate_content(
         model=MODEL_NAME,

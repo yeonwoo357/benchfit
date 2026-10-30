@@ -15,9 +15,9 @@ def _get_client():
     return _client
 
 
-def search_web(query, max_results=5):
+def search_web(query, max_results=6, search_depth="advanced"):
     client = _get_client()
-    response = client.search(query, max_results=max_results)
+    response = client.search(query, max_results=max_results, search_depth=search_depth)
     return [
         {"title": r["title"], "url": r["url"], "content": r["content"]}
         for r in response["results"]

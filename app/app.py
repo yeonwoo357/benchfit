@@ -5,12 +5,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import streamlit as st
 from agent import (
+    deep_research_benchmarks,
     evaluate_qualitative,
     evaluate_quantitative,
-    research_benchmarks,
     synthesize_benchmark,
 )
 from history import load_history, log_run
+
+
+def esc(text):
+    """Escape $ so Streamlit's markdown renderer doesn't treat dollar amounts as LaTeX math."""
+    return str(text).replace("$", "\\$")
+
 
 st.set_page_config(page_title="BenchFit", page_icon="📏", layout="wide")
 st.title("📏 BenchFit — Marketing Results Measurement Agent")
@@ -22,7 +28,7 @@ st.caption(
     "(Portfolio project — not a production service)"
 )
 
-for key in ["search_results", "trace", "benchmark", "benchmark_confirmed", "quant_result", "qual_result", "inputs"]:
+for key in ["search_results", "trace", "gaps", "benchmark", "benchmark_confirmed", "quant_result", "qual_result", "inputs"]:
     if key not in st.session_state:
         st.session_state[key] = None
 if st.session_state.benchmark_confirmed is None:
@@ -36,8 +42,8 @@ with st.sidebar:
     else:
         for entry in reversed(history[-10:]):
             st.markdown(
-                f"**{entry['industry']}** ({entry['channel']})  \n"
-                f"{entry['stage']} · {entry['business_model']} · {entry['campaign_type']}  \n"
+                f"**{esc(entry['industry'])}** ({esc(entry['channel'])})  \n"
+                f"{esc(entry['stage'])} · {esc(entry['business_model'])} · {esc(entry['campaign_type'])}  \n"
                 f"{entry['metric_count']} metrics · {entry['timestamp'][:16].replace('T', ' ')}"
             )
             st.divider()
@@ -66,17 +72,22 @@ with st.form("context_form"):
         placeholder="Paste ad copy, captions, or customer comments here",
         height=100,
     )
-    submitted = st.form_submit_button("🔎 Research industry benchmarks")
+    submitted = st.form_submit_button("🔎 Deep-research industry benchmarks")
 
 if submitted:
     if not (industry and campaign_type and actual_metrics):
         st.warning("Please fill in industry, campaign type, and actual metrics.")
     else:
-        with st.spinner("Agent is deciding what to search, then researching benchmarks..."):
-            results, trace = research_benchmarks(industry, stage, business_model, channel, campaign_type)
+        status = st.empty()
+        with st.spinner("Agent is researching, then reviewing its own coverage for gaps..."):
+            results, trace, gaps = deep_research_benchmarks(
+                industry, stage, business_model, channel, campaign_type, on_step=lambda s: status.write(f"🔎 {s}")
+            )
             benchmark = synthesize_benchmark(industry, stage, business_model, channel, campaign_type, results)
+        status.empty()
         st.session_state.search_results = results
         st.session_state.trace = trace
+        st.session_state.gaps = gaps
         st.session_state.benchmark = benchmark
         st.session_state.benchmark_confirmed = False
         st.session_state.quant_result = None
@@ -95,23 +106,29 @@ benchmark = st.session_state.benchmark
 if benchmark and not st.session_state.benchmark_confirmed:
     st.divider()
     st.subheader("2. Review the proposed benchmark — this is a draft, not a verdict")
-    with st.expander(f"🤖 Agent trace — {len(st.session_state.trace)} searches it decided to run"):
+    with st.expander(
+        f"🤖 Agent trace — {len(st.session_state.trace)} searches across 2 research passes "
+        f"({len(st.session_state.search_results)} unique sources)"
+    ):
         for step in st.session_state.trace:
-            st.write(f"- Searched \"{step['query']}\" → {step['result_count']} results")
+            tag = " 🔍 *(gap-fill pass)*" if step.get("phase") == "gap-fill" else ""
+            st.write(f"- Searched \"{esc(step['query'])}\" → {step['result_count']} results{tag}")
+        if st.session_state.gaps:
+            st.caption(f"Self-identified gaps before the second pass: {esc(st.session_state.gaps)}")
 
     if benchmark.get("context_notes"):
-        st.info(benchmark["context_notes"])
+        st.info(esc(benchmark["context_notes"]))
 
     st.caption("Adjust any range or reasoning before committing to it — you know your context better than the agent does.")
     for i, m in enumerate(benchmark["metrics"]):
-        st.markdown(f"**{m['name']}**")
+        st.markdown(f"**{esc(m['name'])}**")
         c1, c2 = st.columns([1, 2])
         with c1:
             st.text_input("Reasonable range", value=m["reasonable_range"], key=f"range_{i}")
         with c2:
             st.text_area("Reasoning", value=m["reasoning"], key=f"reasoning_{i}", height=70)
         if m.get("sources"):
-            st.caption("Sources: " + " · ".join(m["sources"]))
+            st.caption("Sources: " + esc(" · ".join(m["sources"])))
         st.divider()
 
     if st.button("✅ Confirm this benchmark & continue"):
@@ -136,8 +153,8 @@ if st.session_state.benchmark_confirmed:
     st.subheader("2. Confirmed benchmark (A)")
     confirmed = st.session_state.benchmark
     for m in confirmed["metrics"]:
-        st.markdown(f"**{m['name']}**: {m['reasonable_range']}")
-        st.caption(m["reasoning"])
+        st.markdown(f"**{esc(m['name'])}**: {esc(m['reasonable_range'])}")
+        st.caption(esc(m["reasoning"]))
 
     if st.session_state.quant_result is None:
         if st.button("📊 Run evaluation against this benchmark"):
@@ -174,9 +191,12 @@ if quant_result:
             "Above benchmark": "🟢",
             "No benchmark available": "⚪",
         }.get(r["verdict"], "⚪")
-        st.markdown(f"{verdict_icon} **{r['metric']}** — actual: {r['actual']} · benchmark: {r['benchmark']} · {r['verdict']}")
-        st.caption(r["feedback"])
-    st.success(quant_result["overall_feedback"])
+        st.markdown(
+            f"{verdict_icon} **{esc(r['metric'])}** — actual: {esc(r['actual'])} · "
+            f"benchmark: {esc(r['benchmark'])} · {r['verdict']}"
+        )
+        st.caption(esc(r["feedback"]))
+    st.success(esc(quant_result["overall_feedback"]))
 
     qual_result = st.session_state.qual_result
     if qual_result:
@@ -184,11 +204,11 @@ if quant_result:
         c1, c2 = st.columns(2)
         with c1:
             st.metric("Tone fit", f"{qual_result['tone_fit_score']}/5")
-            st.caption(qual_result["tone_fit_reason"])
+            st.caption(esc(qual_result["tone_fit_reason"]))
         with c2:
             st.metric("Message clarity", f"{qual_result['clarity_score']}/5")
-            st.caption(qual_result["clarity_reason"])
-        st.info(qual_result["overall_feedback"])
+            st.caption(esc(qual_result["clarity_reason"]))
+        st.info(esc(qual_result["overall_feedback"]))
 
     st.caption(
         "Every number above traces back to: the agent's research → the benchmark you reviewed "

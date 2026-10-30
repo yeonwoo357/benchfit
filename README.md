@@ -6,9 +6,10 @@ performance numbers, but no reasonable, context-specific standard to judge them 
 model, and channel — and that context is exactly what's hard to research every time.
 
 Give it your campaign context (industry, company stage, B2C/B2B/D2C, channel, campaign
-type) and your actual metrics. A function-calling agent (Gemini) researches live industry
-benchmark reports via Tavily, proposes a reasonable benchmark standard with reasoning and
-sources — and then **stops and asks you to review and approve it** before anything is
+type) and your actual metrics. A **two-pass deep research agent** (Gemini) researches live
+industry benchmark reports via Tavily, critiques its own coverage, runs a second targeted
+pass to fill whatever's thin, then proposes a reasonable benchmark standard with reasoning
+and sources — and then **stops and asks you to review and approve it** before anything is
 scored. Only after you commit to the benchmark does it compare your actual numbers against
 it (quantitative) and score any creative/customer-response text you paste in for tone fit
 and clarity (qualitative, LLM-as-judge).
@@ -18,6 +19,14 @@ and clarity (qualitative, LLM-as-judge).
   cites a real, clickable source, not a possibly outdated or invented number.
 - **A real tool-calling agent loop**: the model decides how many searches to run and what
   to search for, based on the specific campaign context, not a hardcoded query list.
+- **Two-pass deep research, not a single search sweep**: after the initial pass, the agent
+  reviews its own results like an analyst — flags which metrics are backed by only one weak
+  source or don't match the context — and runs a second, targeted pass to plug exactly
+  those gaps before synthesizing anything. Typical runs end up cross-referencing 20-30+
+  unique sources per report.
+- **Cross-source reconciliation**: when sources disagree on a number, the synthesis step
+  is instructed to reconcile them into one range and say so, instead of picking one source
+  silently.
 - **An explicit commit gate, not a black box**: the agent's proposed benchmark is a draft.
   You can edit every range and every reasoning note before it's used to score anything.
   Nothing downstream happens without your sign-off.
@@ -29,9 +38,12 @@ and clarity (qualitative, LLM-as-judge).
 ## Pipeline
 ```
 Input: industry · company stage · B2C/B2B/D2C · channel · campaign type · actual metrics
-  -> Agent loop: Gemini decides benchmark-research queries via function calling (src/agent.py)
-  -> Tavily web search executes each query (src/search.py)
-  -> Gemini synthesizes a benchmark standard (A): per-metric range + reasoning + sources
+  -> Pass 1: Gemini decides benchmark-research queries via function calling (src/agent.py)
+  -> Tavily advanced-depth web search executes each query (src/search.py)
+  -> Gap analysis: Gemini reviews its own results and flags thin/missing coverage
+  -> Pass 2: targeted follow-up searches to fill exactly those gaps
+  -> Gemini synthesizes a benchmark standard (A): per-metric range + reasoning + sources,
+     reconciling disagreement between sources instead of picking one silently
   -> COMMIT GATE: marketer reviews, edits, and approves (A) before anything is scored
   -> Quantitative evaluation: actual metrics vs. approved (A) -> verdict + feedback per metric
   -> Qualitative evaluation: LLM-judge scores pasted creative/customer text on tone fit & clarity
@@ -60,7 +72,9 @@ streamlit run app/app.py --server.port 8504
 
 ## Status
 - [x] Gemini function-calling agent loop researching benchmark reports (autonomous multi-step search)
-- [x] Benchmark synthesis with per-metric reasoning + sources (JSON schema output)
+- [x] Two-pass deep research: self-critique of coverage gaps + targeted follow-up pass
+- [x] Advanced-depth Tavily search for richer source content
+- [x] Benchmark synthesis with per-metric reasoning + sources, reconciling conflicting numbers (JSON schema output)
 - [x] Human-in-the-loop commit gate: marketer reviews/edits the benchmark before it's used
 - [x] Quantitative evaluation against the approved benchmark
 - [x] Qualitative LLM-judge evaluation of creative/customer-response text (tone fit, clarity)
@@ -71,8 +85,9 @@ streamlit run app/app.py --server.port 8504
 - [ ] Public deployment (Streamlit Community Cloud)
 
 ## Known limitations
-- Bound by Tavily's free tier (1,000 searches/month)
+- Bound by Tavily's free tier (1,000 searches/month) — advanced-depth search and the
+  two-pass gap-fill use more credits per run (roughly 6-9 searches, ~2 credits each)
 - Benchmark quality depends on what's publicly indexed for a given industry/channel
   combination — niche or emerging categories will have thinner source coverage, which the
-  agent flags in its context notes rather than papering over
+  agent flags in its context notes and gap analysis rather than papering over
 - If deployed publicly, all visitors would share this project's free-tier API quota
