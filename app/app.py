@@ -1,3 +1,4 @@
+import html
 import os
 import sys
 
@@ -11,6 +12,7 @@ from agent import (
     synthesize_benchmark,
 )
 from history import load_history, log_run
+from style import inject_base_css, render_hero, verdict_badge
 
 
 def esc(text):
@@ -18,15 +20,15 @@ def esc(text):
     return str(text).replace("$", "\\$")
 
 
-st.set_page_config(page_title="BenchFit", page_icon="📏", layout="wide")
-st.title("📏 BenchFit — Marketing Results Measurement Agent")
-st.caption(
-    "The hard part of judging campaign results isn't the math — it's knowing what a "
-    "reasonable benchmark even IS for your industry, company stage, and channel. This "
-    "agent researches that benchmark, lets you review and adjust it, and only then scores "
-    "your actual results against it. AI proposes the standard; you approve it. "
-    "(Portfolio project — not a production service)"
-)
+def html_esc(text):
+    """Escape text for embedding inside a raw HTML string (unsafe_allow_html=True).
+    No markdown $ escaping needed here -- plain HTML text isn't LaTeX-parsed."""
+    return html.escape(str(text))
+
+
+st.set_page_config(page_title="BenchFit", page_icon="📏", layout="centered")
+inject_base_css()
+render_hero()
 
 for key in ["search_results", "trace", "gaps", "benchmark", "benchmark_confirmed", "quant_result", "qual_result", "inputs"]:
     if key not in st.session_state:
@@ -35,7 +37,7 @@ if st.session_state.benchmark_confirmed is None:
     st.session_state.benchmark_confirmed = False
 
 with st.sidebar:
-    st.subheader("Evaluation History")
+    st.markdown("### Evaluation history")
     history = load_history()
     if not history:
         st.caption("No evaluations yet.")
@@ -48,31 +50,33 @@ with st.sidebar:
             )
             st.divider()
 
-st.subheader("1. Campaign context")
-with st.form("context_form"):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        industry = st.text_input("Industry / sector", placeholder="e.g. vegan skincare, B2B SaaS")
-        channel = st.selectbox(
-            "Channel", ["Instagram", "Google Ads", "Facebook", "TikTok", "YouTube", "Email", "Other"]
-        )
-    with col2:
-        stage = st.selectbox("Company stage", ["Startup", "SMB", "Mid-size", "Enterprise"])
-        campaign_type = st.text_input("Campaign type", placeholder="e.g. brand awareness, conversion")
-    with col3:
-        business_model = st.selectbox("Business model", ["B2C", "B2B", "D2C"])
+st.markdown('<div class="bf-section-label">Step 1</div>', unsafe_allow_html=True)
+st.markdown("### Campaign context")
+with st.container(border=True):
+    with st.form("context_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            industry = st.text_input("Industry / sector", placeholder="e.g. vegan skincare, B2B SaaS")
+            channel = st.selectbox(
+                "Channel", ["Instagram", "Google Ads", "Facebook", "TikTok", "YouTube", "Email", "Other"]
+            )
+        with col2:
+            stage = st.selectbox("Company stage", ["Startup", "SMB", "Mid-size", "Enterprise"])
+            campaign_type = st.text_input("Campaign type", placeholder="e.g. brand awareness, conversion")
+        with col3:
+            business_model = st.selectbox("Business model", ["B2C", "B2B", "D2C"])
 
-    actual_metrics = st.text_area(
-        "Actual performance metrics",
-        placeholder="e.g.\nCTR: 2.3%\nConversion rate: 1.1%\nCPA: $14\nROAS: 3.2x",
-        height=100,
-    )
-    creative_text = st.text_area(
-        "Creative / customer-response text (optional, for qualitative scoring)",
-        placeholder="Paste ad copy, captions, or customer comments here",
-        height=100,
-    )
-    submitted = st.form_submit_button("🔎 Deep-research industry benchmarks")
+        actual_metrics = st.text_area(
+            "Actual performance metrics",
+            placeholder="e.g.\nCTR: 2.3%\nConversion rate: 1.1%\nCPA: $14\nROAS: 3.2x",
+            height=100,
+        )
+        creative_text = st.text_area(
+            "Creative / customer-response text (optional, for qualitative scoring)",
+            placeholder="Paste ad copy, captions, or customer comments here",
+            height=100,
+        )
+        submitted = st.form_submit_button("Deep-research industry benchmarks →")
 
 if submitted:
     if not (industry and campaign_type and actual_metrics):
@@ -104,8 +108,15 @@ if submitted:
 
 benchmark = st.session_state.benchmark
 if benchmark and not st.session_state.benchmark_confirmed:
-    st.divider()
-    st.subheader("2. Review the proposed benchmark — this is a draft, not a verdict")
+    st.markdown('<div class="bf-section-label">Step 2</div>', unsafe_allow_html=True)
+    st.markdown("### Review the proposed benchmark")
+    st.markdown(
+        '<div class="bf-gate"><b>This is a draft, not a verdict.</b> Adjust any range or '
+        "reasoning before committing to it — you know your context better than the agent does. "
+        "Nothing is scored until you confirm.</div>",
+        unsafe_allow_html=True,
+    )
+
     with st.expander(
         f"🤖 Agent trace — {len(st.session_state.trace)} searches across 2 research passes "
         f"({len(st.session_state.search_results)} unique sources)"
@@ -119,17 +130,16 @@ if benchmark and not st.session_state.benchmark_confirmed:
     if benchmark.get("context_notes"):
         st.info(esc(benchmark["context_notes"]))
 
-    st.caption("Adjust any range or reasoning before committing to it — you know your context better than the agent does.")
     for i, m in enumerate(benchmark["metrics"]):
-        st.markdown(f"**{esc(m['name'])}**")
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.text_input("Reasonable range", value=m["reasonable_range"], key=f"range_{i}")
-        with c2:
-            st.text_area("Reasoning", value=m["reasoning"], key=f"reasoning_{i}", height=70)
-        if m.get("sources"):
-            st.caption("Sources: " + esc(" · ".join(m["sources"])))
-        st.divider()
+        with st.container(border=True):
+            st.markdown(f'<div class="bf-metric-name">{html_esc(m["name"])}</div>', unsafe_allow_html=True)
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                st.text_input("Reasonable range", value=m["reasonable_range"], key=f"range_{i}")
+            with c2:
+                st.text_area("Reasoning", value=m["reasoning"], key=f"reasoning_{i}", height=70)
+            if m.get("sources"):
+                st.caption("Sources: " + esc(" · ".join(m["sources"])))
 
     if st.button("✅ Confirm this benchmark & continue"):
         confirmed_metrics = []
@@ -149,12 +159,16 @@ if benchmark and not st.session_state.benchmark_confirmed:
         st.rerun()
 
 if st.session_state.benchmark_confirmed:
-    st.divider()
-    st.subheader("2. Confirmed benchmark (A)")
+    st.markdown('<div class="bf-section-label">Step 2 · confirmed</div>', unsafe_allow_html=True)
+    st.markdown("### Confirmed benchmark (A)")
     confirmed = st.session_state.benchmark
-    for m in confirmed["metrics"]:
-        st.markdown(f"**{esc(m['name'])}**: {esc(m['reasonable_range'])}")
-        st.caption(esc(m["reasoning"]))
+    with st.container(border=True):
+        for m in confirmed["metrics"]:
+            st.markdown(
+                f'<div class="bf-metric-name">{html_esc(m["name"])}: {html_esc(m["reasonable_range"])}</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption(esc(m["reasoning"]))
 
     if st.session_state.quant_result is None:
         if st.button("📊 Run evaluation against this benchmark"):
@@ -180,22 +194,19 @@ if st.session_state.benchmark_confirmed:
 
 quant_result = st.session_state.quant_result
 if quant_result:
-    st.divider()
-    st.subheader("3. Evaluation report")
+    st.markdown('<div class="bf-section-label">Step 3</div>', unsafe_allow_html=True)
+    st.markdown("### Evaluation report")
 
     st.markdown("#### Quantitative — actual vs. confirmed benchmark")
     for r in quant_result["results"]:
-        verdict_icon = {
-            "Below benchmark": "🔴",
-            "Within benchmark": "🟡",
-            "Above benchmark": "🟢",
-            "No benchmark available": "⚪",
-        }.get(r["verdict"], "⚪")
-        st.markdown(
-            f"{verdict_icon} **{esc(r['metric'])}** — actual: {esc(r['actual'])} · "
-            f"benchmark: {esc(r['benchmark'])} · {r['verdict']}"
-        )
-        st.caption(esc(r["feedback"]))
+        with st.container(border=True):
+            st.markdown(
+                f'<div class="bf-metric-name">{html_esc(r["metric"])} {verdict_badge(r["verdict"])}</div>'
+                f'<div style="color:#5B5B63;font-size:0.92rem;margin-top:0.3rem;">'
+                f'actual: <b>{html_esc(r["actual"])}</b> · benchmark: {html_esc(r["benchmark"])}</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption(esc(r["feedback"]))
     st.success(esc(quant_result["overall_feedback"]))
 
     qual_result = st.session_state.qual_result
