@@ -1,17 +1,21 @@
 import json
 import os
+import time
 
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 from search import search_web
 
 load_dotenv()
 
 MODEL_NAME = "gemini-3.5-flash-lite"
-MAX_SEARCH_STEPS = 5
-MAX_GAP_QUERIES = 3
+MAX_SEARCH_STEPS = 6
+MAX_GAP_QUERIES = 5
+MAX_BROADEN_QUERIES = 4
+MIN_MENTIONS_FOR_COVERAGE = 2
+MAX_API_RETRIES = 3
 
 _client = None
 
@@ -21,6 +25,37 @@ def _get_client():
     if _client is None:
         _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     return _client
+
+
+def _generate_content(**kwargs):
+    """Gemini occasionally returns a transient 503 (model overloaded) or 429 (rate limit)
+    -- retry a couple of times with backoff before giving up, since these aren't real failures."""
+    client = _get_client()
+    for attempt in range(MAX_API_RETRIES):
+        try:
+            return client.models.generate_content(**kwargs)
+        except errors.ServerError:
+            if attempt == MAX_API_RETRIES - 1:
+                raise
+            time.sleep(2 * (attempt + 1))
+        except errors.ClientError as e:
+            if e.code != 429 or attempt == MAX_API_RETRIES - 1:
+                raise
+            time.sleep(5 * (attempt + 1))
+
+
+def extract_metric_names(actual_metrics_text):
+    """Pull out the metric names the marketer actually reported, e.g. 'CPM: $18' -> 'CPM',
+    so the research pipeline can guarantee coverage of exactly what they asked about."""
+    names = []
+    for line in actual_metrics_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name = line.split(":", 1)[0].strip() if ":" in line else line
+        if name:
+            names.append(name)
+    return names
 
 
 SEARCH_TOOL = types.Tool(
@@ -48,11 +83,20 @@ SEARCH_TOOL = types.Tool(
 AGENT_SYSTEM_PROMPT = """\
 You are a research agent for digital marketers. Given a campaign context, decide what to \
 search for on the web to find real industry benchmark data for the relevant performance \
-metrics (e.g. CTR, conversion rate, CPA, ROAS, engagement rate -- whichever fit this \
-channel and campaign type). Call `search_web` with focused queries, one at a time. Issue \
-2 to {max_steps} searches covering different angles (e.g. industry-specific benchmark \
-reports, company-stage/budget context, channel-specific studies). Once you have enough \
-material, stop calling tools.
+metrics.
+
+The marketer has reported these actual metrics and needs reliable benchmark data for EVERY \
+one of them -- this is the top priority:
+{actual_metrics}
+
+In addition, also consider other standard metrics for this channel and campaign type that \
+would add useful context (e.g. CTR, conversion rate, CPA, ROAS, engagement rate -- whichever \
+are standard here). Call `search_web` with focused queries, one at a time. Issue up to \
+{max_steps} searches: make sure every one of the marketer's reported metrics gets at least \
+one dedicated, focused search before you spend searches on anything else, then cover \
+industry-specific benchmark reports, company-stage/budget context, and channel-specific \
+studies for additional metrics. Once you have solid coverage of all the marketer's reported \
+metrics, stop calling tools.
 
 Campaign context:
 - Industry: {industry}
@@ -60,53 +104,24 @@ Campaign context:
 - Business model: {business_model}
 - Channel: {channel}
 - Campaign type: {campaign_type}
-"""
-
-SYNTHESIZE_PROMPT = """\
-Using ONLY the search results gathered below, synthesize a reasonable performance \
-benchmark standard for this campaign context. For each metric that is actually relevant \
-to this channel and campaign type, infer a reasonable range grounded in the search \
-results -- do not invent numbers that aren't supported by the sources. Where multiple \
-sources give different numbers for the same metric, reconcile them into one range and say \
-so in the reasoning (e.g. "sources range from X to Y; using the overlap"). Prefer metrics \
-backed by more than one source, and if a metric relies on only one weak or tangential \
-source, say so explicitly in its reasoning rather than presenting it with false confidence. \
-If the sources don't give enough signal for a metric at all, say so instead of guessing.
-Respond entirely in English, even if the source material is in Korean or another language.
-
-Campaign context:
-- Industry: {industry}
-- Company stage: {stage}
-- Business model: {business_model}
-- Channel: {channel}
-- Campaign type: {campaign_type}
-
-[Search results]
-{search_results}
-
-Respond with this JSON schema only:
-{{
-  "metrics": [
-    {{
-      "name": "string (e.g. CTR, Conversion rate, CPA, ROAS, Engagement rate)",
-      "reasonable_range": "string (e.g. '1.5% - 3%')",
-      "reasoning": "string (why this range, referencing the context/sources)",
-      "sources": ["string (title + url)", "..."]
-    }}
-  ],
-  "context_notes": "string (caveats: data quality, how well the sources match this exact context, what to treat with caution)"
-}}
 """
 
 GAP_ANALYSIS_PROMPT = """\
 You already gathered the search results below for this campaign context. Review them \
-critically, as a research analyst would before finalizing a report. For which relevant \
-metrics is the evidence thin -- a single source, vague numbers, no mention of this \
-industry/company-stage/channel combination, or outdated data? Propose up to {max_queries} \
-additional, more specific search queries that would plug those exact gaps (e.g. naming the \
-missing metric, a narrower sub-vertical, or a different angle like "annual report" / \
-"case study" / "benchmark 2026"). If coverage is already solid, propose fewer queries or \
-none.
+critically, as a research analyst would before finalizing a report.
+
+The marketer specifically needs reliable benchmark data for these reported metrics -- \
+checking their coverage is the top priority:
+{actual_metrics}
+
+For which of these -- or other relevant metrics -- is the evidence thin: a single source, \
+vague numbers, no mention of this industry/company-stage/channel combination, or outdated \
+data? Propose up to {max_queries} additional, more specific search queries that would plug \
+those exact gaps, prioritizing any of the marketer's reported metrics that aren't well \
+covered yet. If a narrow, industry-specific query is unlikely to return much, propose a \
+broader query instead (e.g. drop the industry qualifier and search for the metric at the \
+channel/campaign-type level only, or search for it as a general advertising benchmark). If \
+coverage is already solid, propose fewer queries or none.
 
 Campaign context:
 - Industry: {industry}
@@ -125,13 +140,92 @@ Respond with this JSON schema only:
 }}
 """
 
+SYNTHESIZE_PROMPT = """\
+Using the search results gathered below, synthesize a performance benchmark standard for \
+this campaign context.
+
+The marketer has reported these actual metrics and you MUST include a benchmark entry for \
+EVERY one of them, using this exact metric name -- never omit one and never respond that \
+there isn't enough data for it:
+{actual_metrics}
+
+When direct, industry-specific evidence is unavailable for a metric, do not refuse or leave \
+it out. Instead fall back, in this order: (1) the best general {channel}/{campaign_type} \
+benchmark the sources do support, even if not specific to "{industry}"; (2) if the sources \
+give nothing usable at all for that metric, your own well-established general knowledge of \
+typical {channel} benchmarks for that metric. Say plainly in the reasoning which of these \
+you used (e.g. "No {industry}-specific data was found; this range reflects general {channel} \
+benchmarks instead" or "Not covered by the search results; this is a general industry range \
+from established marketing-benchmark knowledge, not directly sourced"). Leave "sources" \
+empty only when you used general knowledge with no supporting search result.
+
+Rate your confidence per metric as "High" (multiple matching, industry-specific sources), \
+"Medium" (some relevant sources but not an exact match), or "Low" (general/adjacent \
+knowledge, not directly sourced).
+
+Beyond the marketer's reported metrics, also include a few other standard metrics for this \
+channel and campaign type that give useful additional context, following the same sourcing \
+and confidence rules.
+
+Where multiple sources give different numbers for the same metric, reconcile them into one \
+range and say so in the reasoning (e.g. "sources range from X to Y; using the overlap"). \
+Prefer metrics backed by more than one source, and if a metric relies on only one weak or \
+tangential source, say so explicitly in its reasoning rather than presenting it with false \
+confidence.
+Respond entirely in English, even if the source material is in Korean or another language.
+
+Campaign context:
+- Industry: {industry}
+- Company stage: {stage}
+- Business model: {business_model}
+- Channel: {channel}
+- Campaign type: {campaign_type}
+
+Marketer's actual metrics (reported, free text):
+{actual_metrics_text}
+
+[Search results]
+{search_results}
+
+Respond with this JSON schema only:
+{{
+  "metrics": [
+    {{
+      "name": "string (e.g. CTR, Conversion rate, CPA, ROAS, Engagement rate, CPM, AOV)",
+      "reasonable_range": "string (e.g. '1.5% - 3%')",
+      "confidence": "string (High / Medium / Low)",
+      "reasoning": "string (why this range, referencing the context/sources, and noting if it's a general/broadened estimate rather than industry-specific)",
+      "sources": ["string (title + url)", "..."]
+    }}
+  ],
+  "context_notes": "string (caveats: data quality, how well the sources match this exact context, what to treat with caution)"
+}}
+"""
+
 QUANT_EVAL_PROMPT = """\
-Compare the marketer's actual performance metrics against the CONFIRMED benchmark \
-standard below (the marketer has already reviewed and approved this standard, possibly \
-editing it). For each actual metric provided, find the matching benchmark metric if one \
-exists, classify the result, and give concrete feedback. If an actual metric has no \
-matching benchmark, still report it with verdict "No benchmark available" and brief \
-context. Respond entirely in English.
+You are writing the quantitative section of a campaign performance report for a marketer. \
+Compare the marketer's actual performance metrics against the CONFIRMED benchmark standard \
+below (the marketer has already reviewed and approved this standard, possibly editing it). \
+For each actual metric provided, find the matching benchmark metric, classify the result, \
+and give concrete, specific feedback that reads like a performance analyst's notes -- not a \
+generic restatement of the numbers.
+
+If an actual metric genuinely has no matching entry in the confirmed benchmark (this should \
+be rare, since the benchmark was built to cover the marketer's metrics), do not simply \
+report "No benchmark available" and stop there -- instead use well-established general \
+digital-marketing benchmark knowledge to give a reasoned, best-effort read on whether the \
+actual number looks strong, typical, or weak for this channel, and set the verdict to \
+"Estimated (general benchmark)" with that caveat stated plainly in the feedback.
+
+After scoring every metric, write:
+- "overall_feedback": a short executive-summary paragraph (3-5 sentences) reading like the \
+opening of a campaign performance report -- overall verdict, the strongest and weakest \
+areas, and the single most important takeaway.
+- "recommendations": 3 to 5 concrete, specific next-step actions the marketer could take to \
+improve underperforming metrics, each one sentence, each actionable (not generic advice like \
+"keep monitoring").
+
+Respond entirely in English.
 
 Confirmed benchmark standard:
 {benchmark_json}
@@ -146,18 +240,19 @@ Respond with this JSON schema only:
       "metric": "string",
       "actual": "string",
       "benchmark": "string (the matching benchmark range, or 'N/A')",
-      "verdict": "string (one of: Below benchmark / Within benchmark / Above benchmark / No benchmark available)",
+      "verdict": "string (one of: Below benchmark / Within benchmark / Above benchmark / Estimated (general benchmark))",
       "feedback": "string (concrete, specific feedback)"
     }}
   ],
-  "overall_feedback": "string (short overall read on performance against the approved standard)"
+  "overall_feedback": "string",
+  "recommendations": ["string", "..."]
 }}
 """
 
 QUAL_EVAL_PROMPT = """\
 You are an LLM-judge evaluating marketing creative or customer-response text for this \
-campaign context. Score tone fit and message clarity. Be specific and cite phrases from \
-the text in your reasoning. Respond entirely in English.
+campaign context. Score tone fit and message clarity. Be specific and cite phrases from the \
+text in your reasoning. Respond entirely in English.
 
 Campaign context:
 - Industry: {industry}
@@ -178,12 +273,12 @@ Respond with this JSON schema only:
 """
 
 
-def research_benchmarks(industry, stage, business_model, channel, campaign_type, on_step=None):
-    client = _get_client()
+def research_benchmarks(industry, stage, business_model, channel, campaign_type, actual_metrics_text, on_step=None):
     config = types.GenerateContentConfig(
         tools=[SEARCH_TOOL],
         system_instruction=AGENT_SYSTEM_PROMPT.format(
             max_steps=MAX_SEARCH_STEPS,
+            actual_metrics=actual_metrics_text,
             industry=industry,
             stage=stage,
             business_model=business_model,
@@ -197,7 +292,7 @@ def research_benchmarks(industry, stage, business_model, channel, campaign_type,
     trace = []
 
     for _ in range(MAX_SEARCH_STEPS):
-        response = client.models.generate_content(model=MODEL_NAME, contents=contents, config=config)
+        response = _generate_content(model=MODEL_NAME, contents=contents, config=config)
         candidate = response.candidates[0]
         contents.append(candidate.content)
 
@@ -253,15 +348,15 @@ def research_benchmarks(industry, stage, business_model, channel, campaign_type,
     return deduped, trace
 
 
-def _find_gaps(industry, stage, business_model, channel, campaign_type, search_results):
-    client = _get_client()
+def _find_gaps(industry, stage, business_model, channel, campaign_type, actual_metrics_text, search_results):
     results_text = "\n\n".join(
         f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:400]}" for r in search_results
     )
-    response = client.models.generate_content(
+    response = _generate_content(
         model=MODEL_NAME,
         contents=GAP_ANALYSIS_PROMPT.format(
             max_queries=MAX_GAP_QUERIES,
+            actual_metrics=actual_metrics_text,
             industry=industry,
             stage=stage,
             business_model=business_model,
@@ -274,14 +369,38 @@ def _find_gaps(industry, stage, business_model, channel, campaign_type, search_r
     return json.loads(response.text)
 
 
-def deep_research_benchmarks(industry, stage, business_model, channel, campaign_type, on_step=None):
-    """Two-phase research: an agent-driven broad pass, then a targeted gap-filling pass
-    that re-reads the results like an analyst and searches again for whatever is thin."""
-    deduped, trace = research_benchmarks(industry, stage, business_model, channel, campaign_type, on_step=on_step)
+def _coverage_gaps(metric_names, search_results):
+    """Which of the marketer's reported metrics are still barely mentioned in what we've
+    gathered so far -- these need a broader, deliberately less-specific search."""
+    thin = []
+    for name in metric_names:
+        name_l = name.lower()
+        mentions = sum(
+            1 for r in search_results if name_l in (r["title"] + " " + r["content"]).lower()
+        )
+        if mentions < MIN_MENTIONS_FOR_COVERAGE:
+            thin.append(name)
+    return thin
+
+
+def deep_research_benchmarks(
+    industry, stage, business_model, channel, campaign_type, actual_metrics_text, on_step=None
+):
+    """Three-phase research: an agent-driven broad pass targeting the marketer's own metrics,
+    a gap-filling pass that re-reads the results like an analyst, and a final broadening pass
+    that deliberately drops specificity for any of the marketer's metrics that are still thin
+    -- so a niche context degrades to a general benchmark instead of dead-ending with nothing."""
+    metric_names = extract_metric_names(actual_metrics_text)
+
+    deduped, trace = research_benchmarks(
+        industry, stage, business_model, channel, campaign_type, actual_metrics_text, on_step=on_step
+    )
 
     if on_step:
         on_step("Reviewing coverage for gaps...")
-    gap_analysis = _find_gaps(industry, stage, business_model, channel, campaign_type, deduped)
+    gap_analysis = _find_gaps(
+        industry, stage, business_model, channel, campaign_type, actual_metrics_text, deduped
+    )
     followup_queries = gap_analysis.get("followup_queries", [])[:MAX_GAP_QUERIES]
 
     seen = {r["url"] for r in deduped}
@@ -296,22 +415,36 @@ def deep_research_benchmarks(industry, stage, business_model, channel, campaign_
             seen.add(r["url"])
             deduped.append(r)
 
+    thin_metrics = _coverage_gaps(metric_names, deduped)[:MAX_BROADEN_QUERIES]
+    for name in thin_metrics:
+        query = f"{name} {channel} {campaign_type} industry benchmark average"
+        if on_step:
+            on_step(f"Broadening: {query}")
+        results = search_web(query)
+        trace.append({"query": query, "result_count": len(results), "phase": "broaden"})
+        for r in results:
+            if r["url"] in seen:
+                continue
+            seen.add(r["url"])
+            deduped.append(r)
+
     return deduped, trace, gap_analysis.get("gaps", "")
 
 
-def synthesize_benchmark(industry, stage, business_model, channel, campaign_type, search_results):
-    client = _get_client()
+def synthesize_benchmark(industry, stage, business_model, channel, campaign_type, actual_metrics_text, search_results):
     results_text = "\n\n".join(
-        f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:900]}" for r in search_results
+        f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:1100]}" for r in search_results
     )
-    response = client.models.generate_content(
+    response = _generate_content(
         model=MODEL_NAME,
         contents=SYNTHESIZE_PROMPT.format(
+            actual_metrics=", ".join(extract_metric_names(actual_metrics_text)) or "(none reported)",
             industry=industry,
             stage=stage,
             business_model=business_model,
             channel=channel,
             campaign_type=campaign_type,
+            actual_metrics_text=actual_metrics_text,
             search_results=results_text,
         ),
         config=types.GenerateContentConfig(response_mime_type="application/json"),
@@ -320,8 +453,7 @@ def synthesize_benchmark(industry, stage, business_model, channel, campaign_type
 
 
 def evaluate_quantitative(benchmark, actual_metrics_text):
-    client = _get_client()
-    response = client.models.generate_content(
+    response = _generate_content(
         model=MODEL_NAME,
         contents=QUANT_EVAL_PROMPT.format(
             benchmark_json=json.dumps(benchmark, ensure_ascii=False, indent=2),
@@ -333,8 +465,7 @@ def evaluate_quantitative(benchmark, actual_metrics_text):
 
 
 def evaluate_qualitative(creative_text, industry, business_model, channel):
-    client = _get_client()
-    response = client.models.generate_content(
+    response = _generate_content(
         model=MODEL_NAME,
         contents=QUAL_EVAL_PROMPT.format(
             industry=industry,

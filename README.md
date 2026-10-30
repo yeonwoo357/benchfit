@@ -6,24 +6,32 @@ performance numbers, but no reasonable, context-specific standard to judge them 
 model, and channel — and that context is exactly what's hard to research every time.
 
 Give it your campaign context (industry, company stage, B2C/B2B/D2C, channel, campaign
-type) and your actual metrics. A **two-pass deep research agent** (Gemini) researches live
-industry benchmark reports via Tavily, critiques its own coverage, runs a second targeted
-pass to fill whatever's thin, then proposes a reasonable benchmark standard with reasoning
-and sources — and then **stops and asks you to review and approve it** before anything is
-scored. Only after you commit to the benchmark does it compare your actual numbers against
-it (quantitative) and score any creative/customer-response text you paste in for tone fit
-and clarity (qualitative, LLM-as-judge).
+type) and your actual metrics. A **three-pass deep research agent** (Gemini) researches live
+industry benchmark reports via Tavily -- specifically targeting benchmark data for every
+metric you actually reported, not just generic channel defaults -- critiques its own
+coverage, runs a targeted gap-fill pass, then a final broadening pass that deliberately
+drops specificity for anything still thin so a niche context degrades to a general estimate
+instead of dead-ending with "no data." It then proposes a reasonable benchmark standard with
+a per-metric confidence rating (High/Medium/Low), reasoning, and sources — and **stops and
+asks you to review and approve it** before anything is scored. Only after you commit to the
+benchmark does it compare your actual numbers against it and generate a report: an executive
+summary, a performance snapshot, a metric breakdown table, detailed per-metric analysis, and
+concrete recommendations — plus scores any creative/customer-response text you paste in for
+tone fit and clarity (qualitative, LLM-as-judge).
 
 ## Why this isn't "just ask ChatGPT"
 - **Grounded in live search**, not the model's training data — every benchmark metric
   cites a real, clickable source, not a possibly outdated or invented number.
 - **A real tool-calling agent loop**: the model decides how many searches to run and what
   to search for, based on the specific campaign context, not a hardcoded query list.
-- **Two-pass deep research, not a single search sweep**: after the initial pass, the agent
-  reviews its own results like an analyst — flags which metrics are backed by only one weak
-  source or don't match the context — and runs a second, targeted pass to plug exactly
-  those gaps before synthesizing anything. Typical runs end up cross-referencing 20-30+
-  unique sources per report.
+- **Three-pass deep research, not a single search sweep, and it never just gives up**: the
+  agent first guarantees a dedicated search for every metric you actually reported (not just
+  metrics it guesses are standard for the channel), then reviews its own results like an
+  analyst and runs a targeted gap-fill pass, then a final broadening pass that deliberately
+  drops industry/stage specificity for anything still thin. Typical runs cross-reference
+  40-50+ unique sources per report. When direct evidence genuinely isn't findable, the
+  synthesis step falls back to a general-benchmark estimate with a stated confidence level
+  (High/Medium/Low) instead of refusing with "no benchmark available."
 - **Cross-source reconciliation**: when sources disagree on a number, the synthesis step
   is instructed to reconcile them into one range and say so, instead of picking one source
   silently.
@@ -38,16 +46,22 @@ and clarity (qualitative, LLM-as-judge).
 ## Pipeline
 ```
 Input: industry · company stage · B2C/B2B/D2C · channel · campaign type · actual metrics
-  -> Pass 1: Gemini decides benchmark-research queries via function calling (src/agent.py)
+  -> Pass 1: Gemini decides benchmark-research queries via function calling, guaranteed to
+     cover every metric the marketer actually reported first (src/agent.py)
   -> Tavily advanced-depth web search executes each query (src/search.py)
   -> Gap analysis: Gemini reviews its own results and flags thin/missing coverage
   -> Pass 2: targeted follow-up searches to fill exactly those gaps
-  -> Gemini synthesizes a benchmark standard (A): per-metric range + reasoning + sources,
-     reconciling disagreement between sources instead of picking one silently
-  -> COMMIT GATE: marketer reviews, edits, and approves (A) before anything is scored
-  -> Quantitative evaluation: actual metrics vs. approved (A) -> verdict + feedback per metric
+  -> Pass 3: broadening search for any reported metric still thin after pass 2 -- drops
+     industry/stage specificity so a niche context still gets a usable estimate
+  -> Gemini synthesizes a benchmark standard: per-metric range + confidence (High/Med/Low)
+     + reasoning + sources, reconciling disagreement between sources instead of picking one
+     silently, and falling back to general-knowledge estimates rather than refusing
+  -> COMMIT GATE: marketer reviews, edits, and approves the benchmark before anything is scored
+  -> Quantitative evaluation: actual metrics vs. approved benchmark -> verdict + feedback per
+     metric + an executive summary + concrete recommendations
   -> Qualitative evaluation: LLM-judge scores pasted creative/customer text on tone fit & clarity
-  -> Combined evaluation report: (A) + reasoning + results + feedback, fully traceable
+  -> Report: executive summary + performance snapshot + metric table + detailed analysis +
+     recommendations, fully traceable
   -> Run logged to evaluation_log.json (src/history.py)
 ```
 
@@ -72,13 +86,19 @@ streamlit run app/app.py --server.port 8504
 
 ## Status
 - [x] Gemini function-calling agent loop researching benchmark reports (autonomous multi-step search)
-- [x] Two-pass deep research: self-critique of coverage gaps + targeted follow-up pass
+- [x] Three-pass deep research: targeted coverage of the marketer's own metrics + self-critique
+      gap-fill pass + a final broadening pass so thin coverage degrades to a general estimate
+      instead of a dead end
 - [x] Advanced-depth Tavily search for richer source content
-- [x] Benchmark synthesis with per-metric reasoning + sources, reconciling conflicting numbers (JSON schema output)
+- [x] Benchmark synthesis with per-metric confidence (High/Med/Low) + reasoning + sources,
+      reconciling conflicting numbers and falling back to general knowledge rather than
+      refusing (JSON schema output)
 - [x] Human-in-the-loop commit gate: marketer reviews/edits the benchmark before it's used
-- [x] Quantitative evaluation against the approved benchmark
+- [x] Quantitative evaluation against the approved benchmark, with an executive summary and
+      concrete recommendations
 - [x] Qualitative LLM-judge evaluation of creative/customer-response text (tone fit, clarity)
-- [x] Combined, fully-transparent evaluation report
+- [x] Report-style output: executive summary, performance snapshot, metric table, detailed
+      analysis, recommendations -- fully transparent and traceable
 - [x] Local evaluation history log
 - [x] Tested end-to-end in the browser
 - [ ] RAG-based auto-eval + Q&A tab (stretch goal, not yet built)
@@ -86,8 +106,12 @@ streamlit run app/app.py --server.port 8504
 
 ## Known limitations
 - Bound by Tavily's free tier (1,000 searches/month) — advanced-depth search and the
-  two-pass gap-fill use more credits per run (roughly 6-9 searches, ~2 credits each)
+  three-pass gap-fill/broaden strategy use more credits per run (roughly 10-15 searches,
+  ~2 credits each)
+- Uses `gemini-3.5-flash-lite` rather than a heavier model, chosen for its much higher
+  free-tier requests-per-minute quota given how many Gemini calls one research run now makes
 - Benchmark quality depends on what's publicly indexed for a given industry/channel
-  combination — niche or emerging categories will have thinner source coverage, which the
-  agent flags in its context notes and gap analysis rather than papering over
+  combination — niche or emerging categories fall back to a lower-confidence, more general
+  estimate rather than failing outright, and this is always labeled plainly (confidence
+  rating + reasoning) rather than papered over
 - If deployed publicly, all visitors would share this project's free-tier API quota

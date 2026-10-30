@@ -12,7 +12,7 @@ from agent import (
     synthesize_benchmark,
 )
 from history import load_history, log_run
-from style import inject_base_css, render_hero, verdict_badge
+from style import confidence_badge, inject_base_css, render_hero, verdict_badge
 
 
 def esc(text):
@@ -111,9 +111,17 @@ if active_step == 0:
             status = st.empty()
             with st.spinner("Agent is researching, then reviewing its own coverage for gaps..."):
                 results, trace, gaps = deep_research_benchmarks(
-                    industry, stage, business_model, channel, campaign_type, on_step=lambda s: status.write(f"🔎 {s}")
+                    industry,
+                    stage,
+                    business_model,
+                    channel,
+                    campaign_type,
+                    actual_metrics,
+                    on_step=lambda s: status.write(f"🔎 {s}"),
                 )
-                benchmark = synthesize_benchmark(industry, stage, business_model, channel, campaign_type, results)
+                benchmark = synthesize_benchmark(
+                    industry, stage, business_model, channel, campaign_type, actual_metrics, results
+                )
             status.empty()
             st.session_state.search_results = results
             st.session_state.trace = trace
@@ -150,8 +158,9 @@ if active_step == 1:
             f"🤖 Agent trace — {len(st.session_state.trace)} searches across 2 research passes "
             f"({len(st.session_state.search_results)} unique sources)"
         ):
+            phase_tags = {"gap-fill": " 🔍 *(gap-fill pass)*", "broaden": " 🌐 *(broadened pass)*"}
             for step in st.session_state.trace:
-                tag = " 🔍 *(gap-fill pass)*" if step.get("phase") == "gap-fill" else ""
+                tag = phase_tags.get(step.get("phase"), "")
                 st.write(f"- Searched \"{esc(step['query'])}\" → {step['result_count']} results{tag}")
             if st.session_state.gaps:
                 st.caption(f"Self-identified gaps before the second pass: {esc(st.session_state.gaps)}")
@@ -161,7 +170,10 @@ if active_step == 1:
 
         for i, m in enumerate(benchmark["metrics"]):
             with st.container(border=True):
-                st.markdown(f'<div class="bf-metric-name">{html_esc(m["name"])}</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="bf-metric-name">{html_esc(m["name"])} {confidence_badge(m.get("confidence"))}</div>',
+                    unsafe_allow_html=True,
+                )
                 c1, c2 = st.columns([1, 2])
                 with c1:
                     st.text_input("Reasonable range", value=m["reasonable_range"], key=f"range_{i}")
@@ -178,6 +190,7 @@ if active_step == 1:
                         "name": m["name"],
                         "reasonable_range": st.session_state[f"range_{i}"],
                         "reasoning": st.session_state[f"reasoning_{i}"],
+                        "confidence": m.get("confidence", ""),
                     }
                 )
             st.session_state.benchmark = {
@@ -193,7 +206,8 @@ if active_step == 1:
         with st.container(border=True):
             for m in confirmed["metrics"]:
                 st.markdown(
-                    f'<div class="bf-metric-name">{html_esc(m["name"])}: {html_esc(m["reasonable_range"])}</div>',
+                    f'<div class="bf-metric-name">{html_esc(m["name"])}: {html_esc(m["reasonable_range"])} '
+                    f'{confidence_badge(m.get("confidence"))}</div>',
                     unsafe_allow_html=True,
                 )
                 st.caption(esc(m["reasoning"]))
@@ -225,21 +239,67 @@ if active_step == 1:
 if active_step == 2:
     quant_result = st.session_state.quant_result
     if quant_result:
+        inputs = st.session_state.inputs
+        qual_result = st.session_state.qual_result
+
         st.markdown("### Evaluation report")
 
-        st.markdown("#### Quantitative — actual vs. confirmed benchmark")
+        chips = "".join(
+            f'<span class="bf-chip">{html_esc(v)}</span>'
+            for v in [
+                inputs["industry"],
+                inputs["stage"],
+                inputs["business_model"],
+                inputs["channel"],
+                inputs["campaign_type"],
+            ]
+        )
+        st.markdown(f'<div class="bf-context-chips">{chips}</div>', unsafe_allow_html=True)
+
+        st.markdown(
+            f'<div class="bf-exec-summary"><b>Executive summary.</b> {html_esc(quant_result["overall_feedback"])}</div>',
+            unsafe_allow_html=True,
+        )
+
+        verdict_counts = {}
+        for r in quant_result["results"]:
+            verdict_counts[r["verdict"]] = verdict_counts.get(r["verdict"], 0) + 1
+        tile_order = ["Above benchmark", "Within benchmark", "Below benchmark", "Estimated (general benchmark)"]
+        tiles_html = "".join(
+            f'<div class="bf-stat-tile"><div class="bf-stat-number">{verdict_counts.get(v, 0)}</div>'
+            f'<div class="bf-stat-label">{html_esc(v)}</div></div>'
+            for v in tile_order
+            if verdict_counts.get(v, 0) > 0
+        )
+        if tiles_html:
+            st.markdown(f'<div class="bf-stat-row">{tiles_html}</div>', unsafe_allow_html=True)
+
+        rows_html = "".join(
+            f'<tr><td><b>{html_esc(r["metric"])}</b></td><td>{html_esc(r["actual"])}</td>'
+            f'<td>{html_esc(r["benchmark"])}</td><td>{verdict_badge(r["verdict"])}</td></tr>'
+            for r in quant_result["results"]
+        )
+        st.markdown(
+            f'<table class="bf-report-table"><thead><tr><th>Metric</th><th>Actual</th>'
+            f"<th>Benchmark</th><th>Verdict</th></tr></thead><tbody>{rows_html}</tbody></table>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("#### Detailed analysis")
         for r in quant_result["results"]:
             with st.container(border=True):
                 st.markdown(
-                    f'<div class="bf-metric-name">{html_esc(r["metric"])} {verdict_badge(r["verdict"])}</div>'
-                    f'<div style="color:#5B5B63;font-size:0.92rem;margin-top:0.3rem;">'
-                    f'actual: <b>{html_esc(r["actual"])}</b> · benchmark: {html_esc(r["benchmark"])}</div>',
+                    f'<div class="bf-metric-name">{html_esc(r["metric"])} {verdict_badge(r["verdict"])}</div>',
                     unsafe_allow_html=True,
                 )
                 st.caption(esc(r["feedback"]))
-        st.success(esc(quant_result["overall_feedback"]))
 
-        qual_result = st.session_state.qual_result
+        recommendations = quant_result.get("recommendations", [])
+        if recommendations:
+            st.markdown("#### Recommended next steps")
+            items = "".join(f"<li>{html_esc(rec)}</li>" for rec in recommendations)
+            st.markdown(f'<ul class="bf-rec-list">{items}</ul>', unsafe_allow_html=True)
+
         if qual_result:
             st.markdown("#### Qualitative — LLM-judge on creative / customer-response text")
             c1, c2 = st.columns(2)
