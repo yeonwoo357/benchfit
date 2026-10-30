@@ -6,18 +6,21 @@ performance numbers, but no reasonable, context-specific standard to judge them 
 model, and channel — and that context is exactly what's hard to research every time.
 
 Give it your campaign context (industry, company stage, B2C/B2B/D2C, channel, campaign
-type) and your actual metrics. A **three-pass deep research agent** (Gemini) researches live
-industry benchmark reports via Tavily -- specifically targeting benchmark data for every
-metric you actually reported, not just generic channel defaults -- critiques its own
-coverage, runs a targeted gap-fill pass, then a final broadening pass that deliberately
-drops specificity for anything still thin so a niche context degrades to a general estimate
-instead of dead-ending with "no data." It then proposes a reasonable benchmark standard with
-a per-metric confidence rating (High/Medium/Low), reasoning, and sources — and **stops and
-asks you to review and approve it** before anything is scored. Only after you commit to the
-benchmark does it compare your actual numbers against it and generate a report: an executive
-summary, a performance snapshot, a metric breakdown table, detailed per-metric analysis, and
-concrete recommendations — plus scores any creative/customer-response text you paste in for
-tone fit and clarity (qualitative, LLM-as-judge).
+type, audience type, funnel stage) and your actual metrics. A **three-pass deep research
+agent** (Gemini) researches live industry benchmark reports via Tavily -- specifically
+targeting benchmark data for every metric you actually reported, not just generic channel
+defaults -- critiques its own coverage, runs a targeted gap-fill pass, then a final
+broadening pass that deliberately drops specificity for anything still thin so a niche
+context degrades to a general estimate instead of dead-ending with "no data." It then
+proposes a reasonable benchmark standard with a per-metric confidence rating
+(High/Medium/Low), reasoning, and sources — and **stops and asks you to review and approve
+it** before anything is scored. Only after you commit to the benchmark does it compare your
+actual numbers against it and generate a report: an executive summary, a performance
+snapshot, a metric breakdown table (with a trend column vs. your last run in the same
+context), detailed per-metric analysis, and concrete recommendations — plus scores any
+creative/customer-response text you paste in for tone fit and clarity (qualitative,
+LLM-as-judge). An optional spend/volume field adds a statistical-significance caveat to
+low-sample-size metrics, and the finished report exports as a one-click PDF or CSV.
 
 ## Why this isn't "just ask ChatGPT"
 - **Grounded in live search**, not the model's training data — every benchmark metric
@@ -42,6 +45,10 @@ tone fit and clarity (qualitative, LLM-as-judge).
   it, and the sources — not just a pass/fail verdict.
 - **LLM-as-judge reused deliberately**: the qualitative scoring step reuses the same
   structured-verdict evaluation pattern built and tested in `marketing-rag-qa/eval/`.
+- **Tracks your own trend, not just an industry average**: every run is logged with its full
+  metric values, and a later run in the same industry/channel/campaign-type context
+  automatically shows percent-change vs. your last run — so the report answers "am I
+  improving?" not just "am I average?"
 
 ## Pipeline
 ```
@@ -60,8 +67,11 @@ Input: industry · company stage · B2C/B2B/D2C · channel · campaign type · a
   -> Quantitative evaluation: actual metrics vs. approved benchmark -> verdict + feedback per
      metric + an executive summary + concrete recommendations
   -> Qualitative evaluation: LLM-judge scores pasted creative/customer text on tone fit & clarity
-  -> Report: executive summary + performance snapshot + metric table + detailed analysis +
-     recommendations, fully traceable
+  -> Trend: full metrics from this run are matched against the most recent prior run with the
+     same industry/channel/campaign type, computing percent-change per metric (src/history.py)
+  -> Report: executive summary + performance snapshot + metric table (with trend column) +
+     detailed analysis + recommendations, fully traceable, exportable as PDF or CSV
+     (src/report_export.py)
   -> Run logged to evaluation_log.json (src/history.py)
 ```
 
@@ -71,7 +81,8 @@ benchfit/
 ├── src/
 │   ├── search.py       # Tavily web search (single query -> results)
 │   ├── agent.py         # Research agent loop, benchmark synthesis, quant + qual evaluation
-│   └── history.py       # Local evaluation-run history log
+│   ├── history.py       # Local evaluation-run history log + trend computation
+│   └── report_export.py # PDF / CSV export of the evaluation report
 ├── app/
 │   └── app.py            # Streamlit UI (input -> commit gate -> report)
 ├── requirements.txt
@@ -100,6 +111,14 @@ streamlit run app/app.py --server.port 8504
 - [x] Report-style output: executive summary, performance snapshot, metric table, detailed
       analysis, recommendations -- fully transparent and traceable
 - [x] Local evaluation history log
+- [x] Historical trend comparison: percent-change vs. your last run in the same
+      industry/channel/campaign-type context, surfaced in the summary table and the
+      executive summary
+- [x] Audience type and funnel stage segmentation, threaded through research and evaluation
+      for sharper, more specific benchmarks
+- [x] Optional spend/volume input: adds an explicit statistical-significance caveat to
+      metrics backed by a small sample
+- [x] One-click PDF and CSV export of the finished evaluation report
 - [x] Tested end-to-end in the browser
 - [ ] RAG-based auto-eval + Q&A tab (stretch goal, not yet built)
 - [ ] Public deployment (Streamlit Community Cloud)
