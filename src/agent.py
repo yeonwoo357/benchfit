@@ -104,6 +104,8 @@ Campaign context:
 - Business model: {business_model}
 - Channel: {channel}
 - Campaign type: {campaign_type}
+- Audience type: {audience_type}
+- Funnel stage: {funnel_stage}
 """
 
 GAP_ANALYSIS_PROMPT = """\
@@ -129,6 +131,8 @@ Campaign context:
 - Business model: {business_model}
 - Channel: {channel}
 - Campaign type: {campaign_type}
+- Audience type: {audience_type}
+- Funnel stage: {funnel_stage}
 
 [Search results gathered so far]
 {search_results}
@@ -180,6 +184,8 @@ Campaign context:
 - Business model: {business_model}
 - Channel: {channel}
 - Campaign type: {campaign_type}
+- Audience type: {audience_type}
+- Funnel stage: {funnel_stage}
 
 Marketer's actual metrics (reported, free text):
 {actual_metrics_text}
@@ -217,10 +223,20 @@ digital-marketing benchmark knowledge to give a reasoned, best-effort read on wh
 actual number looks strong, typical, or weak for this channel, and set the verdict to \
 "Estimated (general benchmark)" with that caveat stated plainly in the feedback.
 
+Spend/volume context the marketer provided (may say "not provided"): {volume_context}
+If it suggests a small sample size -- low spend, low impressions, or low click/conversion \
+counts relative to what's typically needed for a stable read on that kind of metric -- flag \
+that explicitly in that metric's feedback (e.g. "with this few conversions, this rate may \
+not be statistically stable yet") instead of treating a small-sample number as a settled \
+fact. If no volume context was given, do not invent a sample-size caveat.
+
+{previous_run_section}
+
 After scoring every metric, write:
 - "overall_feedback": a short executive-summary paragraph (3-5 sentences) reading like the \
 opening of a campaign performance report -- overall verdict, the strongest and weakest \
-areas, and the single most important takeaway.
+areas, the single most important takeaway, and (if previous-run data was given above) a \
+one-clause note on the overall trend versus that previous run.
 - "recommendations": 3 to 5 concrete, specific next-step actions the marketer could take to \
 improve underperforming metrics, each one sentence, each actionable (not generic advice like \
 "keep monitoring").
@@ -273,7 +289,17 @@ Respond with this JSON schema only:
 """
 
 
-def research_benchmarks(industry, stage, business_model, channel, campaign_type, actual_metrics_text, on_step=None):
+def research_benchmarks(
+    industry,
+    stage,
+    business_model,
+    channel,
+    campaign_type,
+    audience_type,
+    funnel_stage,
+    actual_metrics_text,
+    on_step=None,
+):
     config = types.GenerateContentConfig(
         tools=[SEARCH_TOOL],
         system_instruction=AGENT_SYSTEM_PROMPT.format(
@@ -284,6 +310,8 @@ def research_benchmarks(industry, stage, business_model, channel, campaign_type,
             business_model=business_model,
             channel=channel,
             campaign_type=campaign_type,
+            audience_type=audience_type,
+            funnel_stage=funnel_stage,
         ),
     )
     contents = [types.Content(role="user", parts=[types.Part(text="Begin researching now.")])]
@@ -348,7 +376,9 @@ def research_benchmarks(industry, stage, business_model, channel, campaign_type,
     return deduped, trace
 
 
-def _find_gaps(industry, stage, business_model, channel, campaign_type, actual_metrics_text, search_results):
+def _find_gaps(
+    industry, stage, business_model, channel, campaign_type, audience_type, funnel_stage, actual_metrics_text, search_results
+):
     results_text = "\n\n".join(
         f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:400]}" for r in search_results
     )
@@ -362,6 +392,8 @@ def _find_gaps(industry, stage, business_model, channel, campaign_type, actual_m
             business_model=business_model,
             channel=channel,
             campaign_type=campaign_type,
+            audience_type=audience_type,
+            funnel_stage=funnel_stage,
             search_results=results_text,
         ),
         config=types.GenerateContentConfig(response_mime_type="application/json"),
@@ -384,7 +416,15 @@ def _coverage_gaps(metric_names, search_results):
 
 
 def deep_research_benchmarks(
-    industry, stage, business_model, channel, campaign_type, actual_metrics_text, on_step=None
+    industry,
+    stage,
+    business_model,
+    channel,
+    campaign_type,
+    audience_type,
+    funnel_stage,
+    actual_metrics_text,
+    on_step=None,
 ):
     """Three-phase research: an agent-driven broad pass targeting the marketer's own metrics,
     a gap-filling pass that re-reads the results like an analyst, and a final broadening pass
@@ -393,13 +433,21 @@ def deep_research_benchmarks(
     metric_names = extract_metric_names(actual_metrics_text)
 
     deduped, trace = research_benchmarks(
-        industry, stage, business_model, channel, campaign_type, actual_metrics_text, on_step=on_step
+        industry,
+        stage,
+        business_model,
+        channel,
+        campaign_type,
+        audience_type,
+        funnel_stage,
+        actual_metrics_text,
+        on_step=on_step,
     )
 
     if on_step:
         on_step("Reviewing coverage for gaps...")
     gap_analysis = _find_gaps(
-        industry, stage, business_model, channel, campaign_type, actual_metrics_text, deduped
+        industry, stage, business_model, channel, campaign_type, audience_type, funnel_stage, actual_metrics_text, deduped
     )
     followup_queries = gap_analysis.get("followup_queries", [])[:MAX_GAP_QUERIES]
 
@@ -431,7 +479,9 @@ def deep_research_benchmarks(
     return deduped, trace, gap_analysis.get("gaps", "")
 
 
-def synthesize_benchmark(industry, stage, business_model, channel, campaign_type, actual_metrics_text, search_results):
+def synthesize_benchmark(
+    industry, stage, business_model, channel, campaign_type, audience_type, funnel_stage, actual_metrics_text, search_results
+):
     results_text = "\n\n".join(
         f"Title: {r['title']}\nURL: {r['url']}\nContent: {r['content'][:1100]}" for r in search_results
     )
@@ -444,6 +494,8 @@ def synthesize_benchmark(industry, stage, business_model, channel, campaign_type
             business_model=business_model,
             channel=channel,
             campaign_type=campaign_type,
+            audience_type=audience_type,
+            funnel_stage=funnel_stage,
             actual_metrics_text=actual_metrics_text,
             search_results=results_text,
         ),
@@ -452,12 +504,30 @@ def synthesize_benchmark(industry, stage, business_model, channel, campaign_type
     return json.loads(response.text)
 
 
-def evaluate_quantitative(benchmark, actual_metrics_text):
+def evaluate_quantitative(benchmark, actual_metrics_text, volume_context=None, previous_run=None):
+    if previous_run:
+        prev_metrics_text = "\n".join(f"{m['metric']}: {m['actual']}" for m in previous_run["metrics"])
+        previous_run_section = (
+            f"Previous run for this exact context (same industry, channel, campaign type), "
+            f"logged on {previous_run['timestamp'][:10]}:\n{prev_metrics_text}\n"
+            "When relevant, note the direction and rough magnitude of change from this previous "
+            "run in that metric's feedback and in the overall executive summary (e.g. \"CPM "
+            "improved versus your last run\"). Don't speculate about the cause of the change "
+            "beyond what the numbers show."
+        )
+    else:
+        previous_run_section = (
+            "No previous run exists for this exact industry/channel/campaign-type combination "
+            "on file, so there is nothing to compare against -- do not reference a previous run."
+        )
+
     response = _generate_content(
         model=MODEL_NAME,
         contents=QUANT_EVAL_PROMPT.format(
             benchmark_json=json.dumps(benchmark, ensure_ascii=False, indent=2),
             actual_metrics=actual_metrics_text,
+            volume_context=volume_context.strip() if volume_context and volume_context.strip() else "not provided",
+            previous_run_section=previous_run_section,
         ),
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )

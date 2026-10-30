@@ -1,6 +1,7 @@
 import html
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -11,7 +12,8 @@ from agent import (
     evaluate_quantitative,
     synthesize_benchmark,
 )
-from history import load_history, log_run
+from history import compute_trend, find_previous_run, load_history, log_run
+from report_export import build_csv_report, build_pdf_report
 from style import confidence_badge, inject_base_css, render_hero, verdict_badge
 
 
@@ -30,7 +32,17 @@ st.set_page_config(page_title="BENCH-FIT", page_icon="📏", layout="centered")
 inject_base_css()
 render_hero()
 
-for key in ["search_results", "trace", "gaps", "benchmark", "benchmark_confirmed", "quant_result", "qual_result", "inputs"]:
+for key in [
+    "search_results",
+    "trace",
+    "gaps",
+    "benchmark",
+    "benchmark_confirmed",
+    "quant_result",
+    "qual_result",
+    "inputs",
+    "previous_run",
+]:
     if key not in st.session_state:
         st.session_state[key] = None
 if st.session_state.benchmark_confirmed is None:
@@ -92,10 +104,22 @@ if active_step == 0:
             with col3:
                 business_model = st.selectbox("Business model", ["B2C", "B2B", "D2C"])
 
+            col4, col5 = st.columns(2)
+            with col4:
+                audience_type = st.selectbox(
+                    "Audience type", ["Prospecting / Cold", "Retargeting / Warm", "Mixed / Full-funnel"]
+                )
+            with col5:
+                funnel_stage = st.selectbox("Funnel stage", ["Awareness", "Consideration", "Conversion", "Retention"])
+
             actual_metrics = st.text_area(
                 "Actual performance metrics",
                 placeholder="e.g.\nCTR: 2.3%\nConversion rate: 1.1%\nCPA: $14\nROAS: 3.2x",
                 height=100,
+            )
+            volume_context = st.text_input(
+                "Spend & volume (optional — improves the confidence read)",
+                placeholder="e.g. $2,400 spend, 85K impressions, 1,200 clicks",
             )
             creative_text = st.text_area(
                 "Creative / customer-response text (optional, for qualitative scoring)",
@@ -116,11 +140,21 @@ if active_step == 0:
                     business_model,
                     channel,
                     campaign_type,
+                    audience_type,
+                    funnel_stage,
                     actual_metrics,
                     on_step=lambda s: status.write(f"🔎 {s}"),
                 )
                 benchmark = synthesize_benchmark(
-                    industry, stage, business_model, channel, campaign_type, actual_metrics, results
+                    industry,
+                    stage,
+                    business_model,
+                    channel,
+                    campaign_type,
+                    audience_type,
+                    funnel_stage,
+                    actual_metrics,
+                    results,
                 )
             status.empty()
             st.session_state.search_results = results
@@ -136,7 +170,10 @@ if active_step == 0:
                 "business_model": business_model,
                 "channel": channel,
                 "campaign_type": campaign_type,
+                "audience_type": audience_type,
+                "funnel_stage": funnel_stage,
                 "actual_metrics": actual_metrics,
+                "volume_context": volume_context,
                 "creative_text": creative_text,
             }
             st.session_state.active_step = 1
@@ -215,8 +252,11 @@ if active_step == 1:
         if st.session_state.quant_result is None:
             if st.button("📊 Run evaluation against this benchmark", type="primary"):
                 inputs = st.session_state.inputs
+                previous_run = find_previous_run(history, inputs["industry"], inputs["channel"], inputs["campaign_type"])
                 with st.spinner("Scoring actual results against the confirmed benchmark..."):
-                    quant = evaluate_quantitative(confirmed, inputs["actual_metrics"])
+                    quant = evaluate_quantitative(
+                        confirmed, inputs["actual_metrics"], inputs.get("volume_context"), previous_run
+                    )
                     qual = None
                     if inputs["creative_text"].strip():
                         qual = evaluate_qualitative(
@@ -224,13 +264,16 @@ if active_step == 1:
                         )
                 st.session_state.quant_result = quant
                 st.session_state.qual_result = qual
+                st.session_state.previous_run = previous_run
                 log_run(
                     inputs["industry"],
                     inputs["stage"],
                     inputs["business_model"],
                     inputs["channel"],
                     inputs["campaign_type"],
-                    len(confirmed["metrics"]),
+                    inputs["audience_type"],
+                    inputs["funnel_stage"],
+                    [{"metric": r["metric"], "actual": r["actual"]} for r in quant["results"]],
                 )
                 st.session_state.active_step = 2
                 st.rerun()
@@ -241,6 +284,17 @@ if active_step == 2:
     if quant_result:
         inputs = st.session_state.inputs
         qual_result = st.session_state.qual_result
+        previous_run = st.session_state.previous_run
+
+        trend_map = {}
+        if previous_run:
+            prev_by_metric = {m["metric"].lower(): m["actual"] for m in previous_run["metrics"]}
+            for r in quant_result["results"]:
+                prev_actual = prev_by_metric.get(r["metric"].lower())
+                if prev_actual is not None:
+                    trend = compute_trend(r["actual"], prev_actual)
+                    if trend:
+                        trend_map[r["metric"].lower()] = trend
 
         st.markdown("### Evaluation report")
 
@@ -252,9 +306,18 @@ if active_step == 2:
                 inputs["business_model"],
                 inputs["channel"],
                 inputs["campaign_type"],
+                inputs.get("audience_type", ""),
+                inputs.get("funnel_stage", ""),
             ]
+            if v
         )
         st.markdown(f'<div class="bf-context-chips">{chips}</div>', unsafe_allow_html=True)
+
+        if previous_run:
+            st.caption(
+                f"📈 Compared against your previous run for this context "
+                f"({previous_run['timestamp'][:10]})."
+            )
 
         st.markdown(
             f'<div class="bf-exec-summary"><b>Executive summary.</b> {html_esc(quant_result["overall_feedback"])}</div>',
@@ -274,14 +337,25 @@ if active_step == 2:
         if tiles_html:
             st.markdown(f'<div class="bf-stat-row">{tiles_html}</div>', unsafe_allow_html=True)
 
+        def trend_cell(metric_name):
+            trend = trend_map.get(metric_name.lower())
+            if not trend:
+                return "—"
+            arrow = "▲" if trend["pct_change"] > 0 else "▼" if trend["pct_change"] < 0 else "–"
+            return f'{arrow} {abs(trend["pct_change"]):.1f}% <span style="color:#5B5B63;">(was {html_esc(trend["previous"])})</span>'
+
+        has_trend = bool(trend_map)
+        trend_header = "<th>vs. Last Run</th>" if has_trend else ""
         rows_html = "".join(
             f'<tr><td><b>{html_esc(r["metric"])}</b></td><td>{html_esc(r["actual"])}</td>'
-            f'<td>{html_esc(r["benchmark"])}</td><td>{verdict_badge(r["verdict"])}</td></tr>'
+            f'<td>{html_esc(r["benchmark"])}</td><td>{verdict_badge(r["verdict"])}</td>'
+            + (f"<td>{trend_cell(r['metric'])}</td>" if has_trend else "")
+            + "</tr>"
             for r in quant_result["results"]
         )
         st.markdown(
             f'<table class="bf-report-table"><thead><tr><th>Metric</th><th>Actual</th>'
-            f"<th>Benchmark</th><th>Verdict</th></tr></thead><tbody>{rows_html}</tbody></table>",
+            f"<th>Benchmark</th><th>Verdict</th>{trend_header}</tr></thead><tbody>{rows_html}</tbody></table>",
             unsafe_allow_html=True,
         )
 
@@ -315,3 +389,23 @@ if active_step == 2:
             "Every number above traces back to: the agent's research → the benchmark you reviewed "
             "and approved → this comparison. Nothing here was decided without your sign-off."
         )
+
+        st.markdown("#### Export")
+        generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button(
+                "⬇ Download PDF report",
+                data=build_pdf_report(inputs, quant_result, qual_result, trend_map, generated_at),
+                file_name=f"benchfit-report-{inputs['industry'].replace(' ', '-').lower()}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        with dl2:
+            st.download_button(
+                "⬇ Download CSV (metrics)",
+                data=build_csv_report(quant_result, trend_map),
+                file_name=f"benchfit-metrics-{inputs['industry'].replace(' ', '-').lower()}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
