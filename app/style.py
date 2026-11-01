@@ -1,20 +1,26 @@
 import html
+import os
 
 import streamlit as st
+
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
 
 PALETTE = {
     "ink": "#0B0B0C",
     "muted": "#5B5B63",
     "surface": "#F7F7F9",
     "border": "#E7E7EA",
-    "accent": "#2851FF",
+    "accent": "#C5D927",  # brand lime, from logo
+    "yellow": "#E5E654",
+    "rose": "#BF8E87",
+    "blush": "#D8C9C7",
 }
 
 VERDICT_COLORS = {
     "Below benchmark": ("#FCE4E4", "#B3261E"),
     "Within benchmark": ("#FFF4DE", "#8A5B00"),
     "Above benchmark": ("#E3F6E9", "#1E7B3C"),
-    "Estimated (general benchmark)": ("#E8ECFF", "#2851FF"),
+    "Estimated (general benchmark)": ("#F2F6D6", "#5C6B12"),
     "No benchmark available": ("#F0F0F2", "#5B5B63"),
 }
 
@@ -66,7 +72,7 @@ def inject_base_css():
 
         .bf-gate {
             border: 1px solid #0B0B0C; border-radius: 4px; padding: 1rem 1.25rem;
-            background: #F7F7F9; margin-bottom: 1.25rem;
+            background: #FBFBD9; margin-bottom: 1.25rem;
         }
         .bf-gate b { color: #0B0B0C; }
 
@@ -82,6 +88,12 @@ def inject_base_css():
             background: #0B0B0C !important; color: #FFFFFF !important; padding: 0.6rem 1.4rem !important;
         }
         button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover { background: #2A2A2E !important; }
+
+        /* step nav pills use the brand lime for the active step */
+        div[data-testid="stHorizontalBlock"] button[kind="primary"] {
+            background: #C5D927 !important; color: #0B0B0C !important;
+        }
+        div[data-testid="stHorizontalBlock"] button[kind="primary"]:hover { background: #B6C923 !important; }
 
         button[kind="secondary"], button[kind="secondaryFormSubmit"] {
             border-radius: 999px !important; font-weight: 600 !important;
@@ -99,12 +111,12 @@ def inject_base_css():
 
         .bf-context-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0 1.25rem 0; }
         .bf-chip {
-            font-size: 0.78rem; font-weight: 600; color: #5B5B63; background: #F7F7F9;
-            border: 1px solid #E7E7EA; border-radius: 999px; padding: 0.3rem 0.8rem;
+            font-size: 0.78rem; font-weight: 600; color: #6B4A44; background: #F3E9E8;
+            border: 1px solid #E3D1CE; border-radius: 999px; padding: 0.3rem 0.8rem;
         }
 
         .bf-exec-summary {
-            border-left: 3px solid #0B0B0C; background: #F7F7F9; padding: 1.1rem 1.4rem;
+            border-left: 3px solid #BF8E87; background: #F7F7F9; padding: 1.1rem 1.4rem;
             border-radius: 0 4px 4px 0; margin-bottom: 1.5rem; line-height: 1.65;
         }
         .bf-exec-summary b { color: #0B0B0C; }
@@ -113,7 +125,10 @@ def inject_base_css():
             display: flex; border: 1px solid #E7E7EA; border-radius: 4px; overflow: hidden;
             margin-bottom: 1.5rem; flex-wrap: wrap;
         }
-        .bf-stat-tile { flex: 1; min-width: 120px; padding: 1.25rem 1rem; border-right: 1px solid #E7E7EA; }
+        .bf-stat-tile {
+            flex: 1; min-width: 120px; padding: 1.25rem 1rem; border-right: 1px solid #E7E7EA;
+            border-top: 3px solid #C5D927;
+        }
         .bf-stat-tile:last-child { border-right: none; }
         .bf-stat-number { font-size: 2rem; font-weight: 700; color: #0B0B0C; line-height: 1; }
         .bf-stat-label {
@@ -137,11 +152,11 @@ def inject_base_css():
 
 
 def render_hero():
+    st.image(LOGO_PATH, width=260)
     st.markdown(
         """
-        <div class="bf-hero">
+        <div class="bf-hero" style="padding-top: 0;">
             <div class="bf-eyebrow">Portfolio project · AI research agent</div>
-            <div class="bf-title">BENCH-FIT</div>
             <div class="bf-subtitle">
                 The hard part of judging campaign results isn't the math — it's knowing what a
                 reasonable benchmark even <i>is</i> for your industry, company stage, and channel.
