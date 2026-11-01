@@ -46,19 +46,16 @@ def inject_base_css():
         h1, h2, h3 { font-weight: 700 !important; letter-spacing: -0.01em; color: #0B0B0C; }
 
         .bf-hero { padding: 0.5rem 0 1.75rem 0; }
-        .bf-eyebrow {
-            font-size: 0.72rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
-            color: #5B5B63; margin-bottom: 0.75rem;
-        }
-        .bf-title {
-            font-size: 2.5rem; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase;
-            color: #0B0B0C; line-height: 1.05; margin: 0;
-        }
         .bf-subtitle {
             font-size: 1.02rem; color: #5B5B63; max-width: 620px; margin-top: 1rem; line-height: 1.6;
         }
 
         .bf-hr { border-top: 1px solid #E7E7EA; margin: 1.25rem 0 1.5rem 0; }
+
+        /* center the brand logo -- its wrapper chain shrinks to fit the image instead
+           of stretching to the row, so force the chain to full width first */
+        div[data-testid="stFullScreenFrame"] > div { width: 100% !important; }
+        div[data-testid="stImage"] { display: flex !important; justify-content: center; width: 100% !important; }
 
         .bf-card { background: #FFFFFF; border: 1px solid #E7E7EA; border-radius: 4px; padding: 1.5rem; margin-bottom: 1rem; }
 
@@ -152,16 +149,17 @@ def inject_base_css():
 
 
 def render_hero():
-    st.image(LOGO_PATH, width=260)
+    st.image(LOGO_PATH, width=380)
     st.markdown(
         """
-        <div class="bf-hero" style="padding-top: 0;">
-            <div class="bf-eyebrow">Portfolio project · AI research agent</div>
+        <div class="bf-hero" style="padding-top: 0.75rem;">
             <div class="bf-subtitle">
                 The hard part of judging campaign results isn't the math — it's knowing what a
                 reasonable benchmark even <i>is</i> for your industry, company stage, and channel.
                 BENCH-FIT researches that benchmark, lets you review and adjust it, and only then
                 scores your actual results against it. AI proposes the standard; you approve it.
+                Built for junior marketers who need a defensible benchmark fast, without years of
+                channel experience to eyeball what "good" looks like.
             </div>
         </div>
         """,
