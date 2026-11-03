@@ -5,6 +5,11 @@ performance numbers, but no reasonable, context-specific standard to judge them 
 "Is 1.2% engagement good?" depends entirely on your industry, company stage, business
 model, and channel — and that context is exactly what's hard to research every time.
 
+I built this out of a real situation as a junior marketer: asked to turn around a
+performance read-out with almost no notice, I had the numbers but no quick, defensible
+way to say whether they were actually good — and not enough time to go research industry
+benchmarks from scratch. BenchFit is the tool I wished existed in that moment.
+
 Give it your campaign context (industry, company stage, B2C/B2B/D2C, channel, campaign
 type, audience type, funnel stage) and your actual metrics. A **three-pass deep research
 agent** (Gemini) researches live industry benchmark reports via Tavily -- specifically
