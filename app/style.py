@@ -47,7 +47,8 @@ def inject_base_css():
 
         .bf-hero { padding: 0.5rem 0 1.75rem 0; }
         .bf-subtitle {
-            font-size: 1.02rem; color: #5B5B63; max-width: 620px; margin-top: 1rem; line-height: 1.6;
+            font-size: 1.08rem; color: #38383F; max-width: 640px; margin: 1rem auto 0 auto;
+            line-height: 1.75; text-align: center;
         }
 
         .bf-hr { border-top: 1px solid #E7E7EA; margin: 1.25rem 0 1.5rem 0; }
